@@ -16,6 +16,7 @@ class SafeHttpClient
 {
     private const MAX_REDIRECTS = 5;
 
+    /** @var non-empty-string */
     private string $userAgent;
     private int $maxBytes;
     private int $timeout;
@@ -26,7 +27,7 @@ class SafeHttpClient
     /** @param list<int> $allowedPorts */
     public function __construct(string $userAgent, int $maxBytes = 1048576, int $timeout = 6, array $allowedPorts = [80, 443])
     {
-        $this->userAgent = $userAgent;
+        $this->userAgent = $userAgent !== '' ? $userAgent : 'turkiye-api';
         $this->maxBytes = $maxBytes;
         $this->timeout = $timeout;
         $this->allowedPorts = $allowedPorts;

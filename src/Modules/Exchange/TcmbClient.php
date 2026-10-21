@@ -12,11 +12,12 @@ class TcmbClient
 {
     private const BASE = 'https://www.tcmb.gov.tr/kurlar';
 
+    /** @var non-empty-string */
     private string $userAgent;
 
     public function __construct(string $userAgent = 'turkiye-api')
     {
-        $this->userAgent = $userAgent;
+        $this->userAgent = $userAgent !== '' ? $userAgent : 'turkiye-api';
     }
 
     /**

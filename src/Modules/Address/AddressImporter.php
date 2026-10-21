@@ -80,11 +80,11 @@ final class AddressImporter
         }
         fgetcsv($fh, 0, ',', '"', ''); // header
         while (($row = fgetcsv($fh, 0, ',', '"', '')) !== false) {
-            if ($row === [null]) {
+            // Skip blank lines (fgetcsv returns [null]) and treat missing cells as empty.
+            if ($row === null || $row === [null]) {
                 continue;
             }
-            /** @var list<string> $row */
-            yield $row;
+            yield array_map(static fn ($cell): string => (string) $cell, $row);
         }
         fclose($fh);
     }

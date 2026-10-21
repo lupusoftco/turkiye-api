@@ -90,7 +90,9 @@ final class MetadataExtractor
     private static function first(\DOMXPath $xpath, string $query): ?\DOMNode
     {
         $list = $xpath->query($query);
-        return $list === false ? null : $list->item(0);
+        $node = $list === false ? null : $list->item(0);
+        // XPath can also yield namespace nodes, which are not DOMNode instances.
+        return $node instanceof \DOMNode ? $node : null;
     }
 
     private static function absolute(string $base, string $url): ?string
