@@ -1,0 +1,20 @@
+# Türkiye API — installed in a sub-directory (e.g. example.com/api/)
+Options -Indexes
+DirectoryIndex index.php index.html
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Never serve the application directory or dot-files (.env etc.)
+    RewriteRule ^app(/|$) - [F,L]
+    RewriteRule (^|/)\. - [F,L]
+
+    # Pass the Authorization header through to PHP (Bearer API keys under FastCGI)
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+    # Everything that is not a real file or directory goes to index.php
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^ index.php [L]
+</IfModule>

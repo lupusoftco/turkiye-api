@@ -1,0 +1,731 @@
+openapi: 3.1.0
+info:
+  title: Türkiye API
+  version: 1.0.0
+  summary: Türkiye'ye özgü geliştirici ihtiyaçları için açık kaynak REST API.
+  description: |
+    TCMB döviz kurları, resmi tatiller ve iş günü hesabı, il / ilçe / mahalle /
+    posta kodu, TCKN / VKN / IBAN / telefon / plaka doğrulama, Türkçe metin
+    araçları, QR kod ve link önizleme.
+
+    **Kurallar**
+    - Başarılı yanıtlar `{ "data": ..., "meta": {...} }` biçimindedir.
+    - Hatalar [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) `application/problem+json` formatındadır.
+    - Tarihler Europe/Istanbul saat diliminde `YYYY-AA-GG` biçimindedir.
+    - Anahtarsız kullanım IP başına sınırlıdır. Daha yüksek limit için API anahtarını
+      `X-API-Key` (veya `Authorization: Bearer ...`) başlığıyla gönderin. Her yanıtta
+      `X-RateLimit-Limit`, `X-RateLimit-Remaining` ve `X-RateLimit-Reset` başlıkları bulunur.
+    - CORS açıktır; API doğrudan tarayıcıdan çağrılabilir.
+  license:
+    name: MIT
+    identifier: MIT
+  contact:
+    name: Lupusoft
+    url: https://github.com/lupusoftco/turkiye-api
+servers:
+  - url: /
+    description: Bu sunucu
+tags:
+  - name: Döviz kurları
+    description: Türkiye Cumhuriyet Merkez Bankası'nın (TCMB) yayımladığı günlük gösterge kurları.
+  - name: Tatil ve iş günü
+    description: 2429 sayılı Kanun'a göre resmi tatiller; yarım günler ve Hicri takvime göre bayramlar dahil.
+  - name: Adres
+    description: 81 il, 973 ilçe, posta kodlarıyla ~73.000 mahalle ve iller arası karayolu mesafeleri.
+  - name: Doğrulama
+    description: Sağlama ve format doğrulaması. Kişisel numaralar URL'ye ve loglara düşmesin diye yalnızca POST.
+  - name: Metin
+    description: Türkçe kurallarına uygun metin araçları.
+  - name: QR kod
+    description: Doğrudan görsel adresi olarak kullanılabilen SVG veya PNG QR kodlar.
+  - name: Link önizleme
+    description: Herhangi bir herkese açık sayfanın başlığı, açıklaması, görseli ve favicon'u.
+  - name: Servis
+    description: Servis bilgileri.
+security:
+  - {}
+  - apiKey: []
+  - bearer: []
+
+paths:
+  /v1/exchange/rates:
+    get:
+      tags: [Döviz kurları]
+      summary: Bir tarihin tüm kurları
+      description: '`date` günü yayımlanan bülteni; hafta sonu ve tatillerde ondan önceki son bülteni döndürür.'
+      operationId: getRates
+      parameters:
+        - $ref: '#/components/parameters/DateDefaultToday'
+        - name: currencies
+          in: query
+          description: Dahil edilecek ISO 4217 kodları (virgülle ayrılmış).
+          schema: { type: string, example: 'USD,EUR,GBP' }
+      responses:
+        '200':
+          description: Her dövizin `unit` birimi başına TL karşılığı.
+          headers:
+            X-RateLimit-Limit: { $ref: '#/components/headers/X-RateLimit-Limit' }
+            X-RateLimit-Remaining: { $ref: '#/components/headers/X-RateLimit-Remaining' }
+            X-RateLimit-Reset: { $ref: '#/components/headers/X-RateLimit-Reset' }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Rate' } }
+                  meta: { $ref: '#/components/schemas/BulletinMeta' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '502': { $ref: '#/components/responses/Upstream' }
+  /v1/exchange/rates/{code}:
+    get:
+      tags: [Döviz kurları]
+      summary: Tek döviz
+      operationId: getRate
+      parameters:
+        - $ref: '#/components/parameters/CurrencyCode'
+        - $ref: '#/components/parameters/DateDefaultToday'
+      responses:
+        '200':
+          description: Kur.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Rate' }
+                  meta: { $ref: '#/components/schemas/BulletinMeta' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/exchange/rates/{code}/history:
+    get:
+      tags: [Döviz kurları]
+      summary: Bir dövizin günlük geçmişi
+      description: İstek başına en fazla 366 gün. Yalnızca bülten yayımlanan günler döner.
+      operationId: getRateHistory
+      parameters:
+        - $ref: '#/components/parameters/CurrencyCode'
+        - { name: from, in: query, description: 'Varsayılan: `to` tarihinden 30 gün önce.', schema: { type: string, format: date } }
+        - { name: to, in: query, description: 'Varsayılan: bugün.', schema: { type: string, format: date } }
+        - name: type
+          in: query
+          description: Yalnızca bir kur türünü döndürür.
+          schema: { $ref: '#/components/schemas/RateType' }
+      responses:
+        '200':
+          description: Zaman serisi, eskiden yeniye.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date: { type: string, format: date }
+                        unit: { type: integer }
+                        forex_buying: { type: [number, 'null'] }
+                        forex_selling: { type: [number, 'null'] }
+                        banknote_buying: { type: [number, 'null'] }
+                        banknote_selling: { type: [number, 'null'] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/exchange/convert:
+    get:
+      tags: [Döviz kurları]
+      summary: Tutar çevir
+      description: Çapraz kurlar TL üzerinden hesaplanır. Varsayılan kur türü, faturalarda yaygın kullanılan `forex_buying` (döviz alış).
+      operationId: convert
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, example: USD } }
+        - { name: to, in: query, required: true, schema: { type: string, example: TRY } }
+        - { name: amount, in: query, schema: { type: number, default: 1, example: 250 } }
+        - { name: type, in: query, schema: { $ref: '#/components/schemas/RateType' } }
+        - $ref: '#/components/parameters/DateDefaultToday'
+      responses:
+        '200':
+          description: Çeviri sonucu.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      amount: { type: number, example: 250 }
+                      result: { type: number, example: 10462.8 }
+                      rate: { type: number, example: 41.8512 }
+                      from: { type: string, example: USD }
+                      to: { type: string, example: TRY }
+                      rate_type: { $ref: '#/components/schemas/RateType' }
+                      date: { type: string, format: date, description: Kullanılan bülten tarihi. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+
+  /v1/holidays:
+    get:
+      tags: [Tatil ve iş günü]
+      summary: Bir yılın tatilleri
+      operationId: listHolidays
+      parameters:
+        - { name: year, in: query, schema: { type: integer, minimum: 2000, maximum: 2070, example: 2026 } }
+        - { name: type, in: query, schema: { type: string, enum: [national, religious] } }
+        - { name: half_days, in: query, description: 'Yarım gün tatilleri (arife, 28 Ekim) dahil et.', schema: { type: boolean, default: true } }
+      responses:
+        '200':
+          description: Tarihe göre sıralı tatiller. Çakışan tatiller ayrı ayrı listelenir.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Holiday' } }
+                  meta: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/holidays/check:
+    get:
+      tags: [Tatil ve iş günü]
+      summary: Bir tarihi sorgula
+      operationId: checkDate
+      parameters:
+        - $ref: '#/components/parameters/DateDefaultToday'
+        - $ref: '#/components/parameters/SaturdayIsWorkday'
+        - $ref: '#/components/parameters/HalfDay'
+      responses:
+        '200':
+          description: Tarihin hafta sonu, tatil, yarım gün veya iş günü olup olmadığı.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      date: { type: string, format: date }
+                      weekday: { type: string, example: Perşembe }
+                      is_weekend: { type: boolean }
+                      is_holiday: { type: boolean }
+                      is_half_day: { type: boolean }
+                      is_business_day: { type: boolean }
+                      holidays: { type: array, items: { $ref: '#/components/schemas/Holiday' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/business-days/count:
+    get:
+      tags: [Tatil ve iş günü]
+      summary: İki tarih arasındaki iş günlerini say
+      description: Başlangıç ve bitiş günleri dahildir. Aralık en fazla 10 yıl olabilir.
+      operationId: countBusinessDays
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date, example: '2026-10-26' } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date, example: '2026-10-30' } }
+        - $ref: '#/components/parameters/SaturdayIsWorkday'
+        - $ref: '#/components/parameters/HalfDay'
+      responses:
+        '200':
+          description: Sayılar.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      from: { type: string, format: date }
+                      to: { type: string, format: date }
+                      calendar_days: { type: integer, example: 5 }
+                      business_days: { type: integer, example: 4 }
+                      non_business_days: { type: integer, example: 1 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/business-days/add:
+    get:
+      tags: [Tatil ve iş günü]
+      summary: Bir tarihe iş günü ekle
+      description: Başlangıç günü sayılmaz; negatif `days` geriye doğru gider.
+      operationId: addBusinessDays
+      parameters:
+        - { name: date, in: query, required: true, schema: { type: string, format: date, example: '2026-10-28' } }
+        - { name: days, in: query, required: true, schema: { type: integer, minimum: -2500, maximum: 2500, example: 5 } }
+        - $ref: '#/components/parameters/SaturdayIsWorkday'
+        - $ref: '#/components/parameters/HalfDay'
+      responses:
+        '200':
+          description: Sonuç tarihi.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      date: { type: string, format: date }
+                      days: { type: integer }
+                      result: { type: string, format: date }
+                      result_weekday: { type: string }
+
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/address/cities:
+    get:
+      tags: [Adres]
+      summary: Tüm iller
+      operationId: listCities
+      responses:
+        '200':
+          description: Plaka koduna göre sıralı 81 il.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/City' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/address/cities/{city}:
+    get:
+      tags: [Adres]
+      summary: Bir il ve ilçeleri
+      operationId: getCity
+      parameters: [{ $ref: '#/components/parameters/City' }]
+      responses:
+        '200':
+          description: İl ve ilçeler.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/City'
+                      - type: object
+                        properties:
+                          districts: { type: array, items: { $ref: '#/components/schemas/District' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/address/cities/{city}/districts:
+    get:
+      tags: [Adres]
+      summary: Bir ilin ilçeleri
+      operationId: listDistricts
+      parameters: [{ $ref: '#/components/parameters/City' }]
+      responses:
+        '200':
+          description: İlçeler.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/District' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/address/cities/{city}/districts/{district}/neighbourhoods:
+    get:
+      tags: [Adres]
+      summary: İl ve ilçe adına göre mahalleler
+      operationId: listNeighbourhoodsByName
+      parameters:
+        - $ref: '#/components/parameters/City'
+        - { name: district, in: path, required: true, description: İlçe adı veya slug., schema: { type: string, example: sisli } }
+      responses:
+        '200':
+          description: Posta kodlarıyla mahalleler.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Neighbourhood' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/address/districts/{id}/neighbourhoods:
+    get:
+      tags: [Adres]
+      summary: İlçe kimliğine göre mahalleler
+      operationId: listNeighbourhoods
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: Posta kodlarıyla mahalleler.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Neighbourhood' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/address/postal-codes/{code}:
+    get:
+      tags: [Adres]
+      summary: Bir posta kodunu kullanan mahalleler
+      operationId: getPostalCode
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string, pattern: '^\d{5}$', example: '34387' } }
+      responses:
+        '200':
+          description: İlçe ve iliyle birlikte eşleşen mahalleler.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/NeighbourhoodWithParents' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/address/search:
+    get:
+      tags: [Adres]
+      summary: Mahalle ara (otomatik tamamlama)
+      description: Büyük/küçük harf ve Türkçe karakter duyarsız; başı eşleşenler önce gelir.
+      operationId: searchAddress
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string, minLength: 2, example: mecidiyekoy } }
+        - { name: city, in: query, description: Plaka kodu veya ad., schema: { type: string, example: '34' } }
+        - { name: district, in: query, description: 'İlçe kimliği ya da `city` ile birlikte ilçe adı.', schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        '200':
+          description: Eşleşmeler.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/NeighbourhoodWithParents' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/address/distance:
+    get:
+      tags: [Adres]
+      summary: İki il merkezi arasındaki karayolu mesafesi
+      operationId: getDistance
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, example: istanbul } }
+        - { name: to, in: query, required: true, schema: { type: string, example: '06' } }
+      responses:
+        '200':
+          description: Kilometre cinsinden mesafe.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      from: { $ref: '#/components/schemas/City' }
+                      to: { $ref: '#/components/schemas/City' }
+                      km: { type: integer }
+
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/validate/{type}:
+    post:
+      tags: [Doğrulama]
+      summary: TCKN, VKN, IBAN, telefon veya plaka doğrula
+      description: |
+        Yalnızca algoritmik kontrol yapılır; hiçbir kamu sistemi sorgulanmaz. Geçerli bir
+        TCKN sağlaması, numaranın gerçek bir kişiye ait olduğunu kanıtlamaz.
+        Tek değer veya toplu olarak en fazla 100 değer gönderilebilir.
+      operationId: validate
+      parameters:
+        - name: type
+          in: path
+          required: true
+          schema: { type: string, enum: [tckn, vkn, iban, phone, plate] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [value]
+                  properties: { value: { type: string, maxLength: 64 } }
+                - type: object
+                  required: [values]
+                  properties: { values: { type: array, maxItems: 100, items: { type: string } } }
+            examples:
+              iban: { value: { value: 'TR33 0006 1005 1978 6457 8413 26' } }
+              batch: { value: { values: ['0532 123 45 67', '+90 212 555 12 34'] } }
+      responses:
+        '200':
+          description: |
+            Her zaman `valid`, `normalized` ve `reason` (geçersizlik nedeni) alanlarını içerir.
+            Türe göre ek alanlar — iban: `country`, `formatted`, `bank_code`, `bank`;
+            telefon: `type`, `e164`, `national`, `area_code`; plaka: `formatted`, `city_code`, `city`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    oneOf:
+                      - $ref: '#/components/schemas/ValidationResult'
+                      - type: array
+                        items: { $ref: '#/components/schemas/ValidationResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /v1/text/case:
+    get:
+      tags: [Metin]
+      summary: Türkçeye uygun büyük/küçük harf dönüşümü
+      operationId: textCase
+      description: Uzun metinler için JSON gövdeli POST da kabul eder.
+      parameters:
+        - $ref: '#/components/parameters/Text'
+        - { name: to, in: query, schema: { type: string, enum: [upper, lower, title, sentence, ascii], default: upper } }
+      responses:
+        '200': { $ref: '#/components/responses/TextResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/text/slug:
+    get:
+      tags: [Metin]
+      summary: URL slug'ı
+      operationId: textSlug
+      parameters:
+        - $ref: '#/components/parameters/Text'
+        - { name: separator, in: query, schema: { type: string, enum: ['-', '_', '.'], default: '-' } }
+      responses:
+        '200': { $ref: '#/components/responses/TextResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/text/number-to-words:
+    get:
+      tags: [Metin]
+      summary: Sayıyı yazıya çevir
+      description: |
+        `1250.50` veya Türkçe biçimde `1.250,50` kabul eder. `currency` verilirse tutar 2 haneye
+        yuvarlanır ve fatura biçimi (`#BinİkiYüzElliTürkLirası...#`) da eklenir.
+      operationId: numberToWords
+      parameters:
+        - { name: number, in: query, required: true, schema: { type: string, example: '1.250,50' } }
+        - { name: currency, in: query, schema: { type: string, enum: [TRY, USD, EUR, GBP] } }
+      responses:
+        '200':
+          description: Yazıyla.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      number: { type: string }
+                      currency: { type: string }
+                      words: { type: string, example: bin iki yüz elli Türk lirası elli kuruş }
+                      invoice: { type: string, example: '#BinİkiYüzElliTürkLirasıElliKuruş#' }
+                      upper: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/text/syllables:
+    get:
+      tags: [Metin]
+      summary: Türkçe kelimeleri hecelere ayır
+      operationId: syllables
+      parameters: [{ $ref: '#/components/parameters/Text' }]
+      responses:
+        '200': { $ref: '#/components/responses/TextResult' }
+
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/qr:
+    get:
+      tags: [QR kod]
+      summary: QR kod görseli
+      description: Görselin kendisini döndürür; adres doğrudan `<img src>` içinde kullanılabilir.
+      operationId: qr
+      parameters:
+        - { name: data, in: query, required: true, schema: { type: string, maxLength: 2000, example: 'https://lupusoft.com' } }
+        - { name: format, in: query, schema: { type: string, enum: [svg, png], default: svg } }
+        - { name: size, in: query, description: Piksel cinsinden yaklaşık genişlik., schema: { type: integer, minimum: 64, maximum: 2000, default: 300 } }
+        - { name: margin, in: query, description: Modül cinsinden kenar boşluğu., schema: { type: integer, minimum: 0, maximum: 10, default: 4 } }
+        - { name: ecc, in: query, description: Hata düzeltme seviyesi., schema: { type: string, enum: [L, M, Q, H], default: M } }
+        - { name: color, in: query, schema: { type: string, example: '000000' } }
+        - { name: background, in: query, schema: { type: string, example: ffffff } }
+        - { name: transparent, in: query, schema: { type: boolean, default: false } }
+      responses:
+        '200':
+          description: QR kod.
+          content:
+            image/svg+xml: { schema: { type: string } }
+            image/png: { schema: { type: string, format: binary } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /v1/link-preview:
+    get:
+      tags: [Link önizleme]
+      summary: Bir adresin başlığı, açıklaması, görseli ve favicon'u
+      description: |
+        Open Graph, Twitter Card ve HTML meta verilerini okur. Sonuçlar 24 saat önbelleklenir.
+        Özel ve ayrılmış IP adresleri reddedilir. Bu uç noktanın istek limiti daha düşüktür.
+      operationId: linkPreview
+      parameters:
+        - { name: url, in: query, required: true, schema: { type: string, example: 'https://github.com' } }
+        - { name: refresh, in: query, description: Önbelleği atla., schema: { type: boolean, default: false } }
+      responses:
+        '200':
+          description: Meta veriler.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/LinkPreview' }
+                  meta: { type: object, properties: { cached: { type: boolean } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /health:
+    get:
+      tags: [Servis]
+      summary: Sağlık kontrolü
+      operationId: health
+      responses:
+        '200': { description: OK }
+
+components:
+  securitySchemes:
+    apiKey: { type: apiKey, in: header, name: X-API-Key }
+    bearer: { type: http, scheme: bearer }
+  headers:
+    X-RateLimit-Limit: { schema: { type: integer }, description: Mevcut zaman penceresinde izin verilen istek sayısı. }
+    X-RateLimit-Remaining: { schema: { type: integer }, description: Mevcut pencerede kalan istek sayısı. }
+    X-RateLimit-Reset: { schema: { type: integer }, description: Pencerenin sıfırlanacağı Unix zamanı. }
+  parameters:
+    DateDefaultToday:
+      name: date
+      in: query
+      description: 'Varsayılan: bugün (Europe/Istanbul).'
+      schema: { type: string, format: date, example: '2026-10-22' }
+    CurrencyCode:
+      name: code
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[A-Za-z]{3}$', example: USD }
+    City:
+      name: city
+      in: path
+      required: true
+      description: Plaka kodu (`34`, `6`) veya ad (`istanbul`, `İstanbul`).
+      schema: { type: string, example: '34' }
+    Text:
+      name: text
+      in: query
+      required: true
+      description: 'En fazla 10.000 karakter. Uzun metinler için `{"text": "..."}` gövdesiyle POST kullanın.' 
+      schema: { type: string, example: "İSTANBUL'DA ılık bir gün" }
+    SaturdayIsWorkday:
+      name: saturday_is_workday
+      in: query
+      schema: { type: boolean, default: false }
+    HalfDay:
+      name: half_day
+      in: query
+      description: Yarım gün tatillerin iş günü sayılıp sayılmayacağı.
+      schema: { type: string, enum: [business, off], default: business }
+  responses:
+    BadRequest:
+      description: Geçersiz parametre.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    NotFound:
+      description: Bulunamadı.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Unprocessable:
+      description: İstek geçerli ama karşılanamıyor.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    RateLimited:
+      description: Çok fazla istek. `Retry-After` başlığına bakın.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Upstream:
+      description: Kaynağa (TCMB) ulaşılamadı.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    TextResult:
+      description: Sonuç.
+      content: { application/json: { schema: { type: object, properties: { data: { type: object } } } } }
+  schemas:
+    Problem:
+      type: object
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string, example: Bad Request }
+        status: { type: integer, example: 400 }
+        detail: { type: string, example: '`date` must be a valid date in YYYY-MM-DD format.' }
+        instance: { type: string, example: /v1/exchange/rates }
+        parameter: { type: string, example: date }
+    RateType:
+      type: string
+      enum: [forex_buying, forex_selling, banknote_buying, banknote_selling]
+    Rate:
+      type: object
+      properties:
+        code: { type: string, example: USD }
+        unit: { type: integer, example: 1, description: 'Kurlar bu kadar birim başına TL karşılığıdır (ör. JPY için 100).' }
+        name_tr: { type: string, example: ABD DOLARI }
+        name_en: { type: string, example: US DOLLAR }
+        forex_buying: { type: [number, 'null'], example: 41.8512 }
+        forex_selling: { type: [number, 'null'], example: 41.9266 }
+        banknote_buying: { type: [number, 'null'], example: 41.8219 }
+        banknote_selling: { type: [number, 'null'], example: 41.9895 }
+    BulletinMeta:
+      type: object
+      properties:
+        requested_date: { type: string, format: date }
+        bulletin_date: { type: string, format: date }
+        bulletin_no: { type: [string, 'null'], example: 2026/201 }
+        base: { type: string, example: TRY }
+    Holiday:
+      type: object
+      properties:
+        date: { type: string, format: date, example: '2026-10-29' }
+        name: { type: string, example: Cumhuriyet Bayramı }
+        name_en: { type: string, example: Republic Day }
+        type: { type: string, enum: [national, religious] }
+        half_day: { type: boolean }
+        starts_at: { type: [string, 'null'], example: '13:00' }
+        estimated: { type: boolean, description: 'Dini bayram tarihi Diyanet tarafından açıklanmamış, hesaplanmışsa true.' }
+    City:
+      type: object
+      properties:
+        code: { type: string, example: '34' }
+        name: { type: string, example: İstanbul }
+        slug: { type: string, example: istanbul }
+    District:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string, example: Şişli }
+        slug: { type: string, example: sisli }
+        neighbourhood_count: { type: integer }
+    Neighbourhood:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string, example: Mecidiyeköy Mah }
+        postal_code: { type: string, example: '34387' }
+    NeighbourhoodWithParents:
+      allOf:
+        - $ref: '#/components/schemas/Neighbourhood'
+        - type: object
+          properties:
+            district: { type: object, properties: { id: { type: integer }, name: { type: string } } }
+            city: { type: object, properties: { code: { type: string }, name: { type: string } } }
+    ValidationResult:
+      type: object
+      properties:
+        input: { type: string, description: Yalnızca toplu yanıtlarda. }
+        valid: { type: boolean }
+        normalized: { type: [string, 'null'] }
+        reason: { type: [string, 'null'] }
+      additionalProperties: true
+    LinkPreview:
+      type: object
+      properties:
+        requested_url: { type: string }
+        url: { type: string, description: Yönlendirmeler sonrası son adres. }
+        title: { type: [string, 'null'] }
+        description: { type: [string, 'null'] }
+        site_name: { type: [string, 'null'] }
+        image: { type: [string, 'null'] }
+        image_alt: { type: [string, 'null'] }
+        favicon: { type: string }
+        type: { type: [string, 'null'] }
+        locale: { type: [string, 'null'] }
+        theme_color: { type: [string, 'null'] }
+        canonical: { type: [string, 'null'] }

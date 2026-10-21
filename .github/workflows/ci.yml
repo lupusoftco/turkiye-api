@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.4', '8.0', '8.1', '8.2', '8.3', '8.4']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: intl, gd, pdo_sqlite, curl, mbstring, dom, simplexml
+          coverage: none
+      - uses: ramsey/composer-install@v3
+      - name: Tests
+        run: vendor/bin/phpunit
+      - name: Static analysis
+        run: vendor/bin/phpstan analyse --memory-limit=512M --no-progress
+
+  openapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint OpenAPI document
+        run: npx -y @redocly/cli@1 lint openapi.yaml
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t turkiye-api .
+      - name: Smoke test
+        run: |
+          docker run -d --name api -p 8080:80 turkiye-api
+          for i in $(seq 1 30); do curl -sf http://localhost:8080/health && break; sleep 2; done
+          curl -sf "http://localhost:8080/v1/address/cities/34" | grep -q 'İstanbul'
+          curl -sf "http://localhost:8080/v1/holidays?year=2026" | grep -q 'Cumhuriyet'

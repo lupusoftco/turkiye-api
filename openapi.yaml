@@ -1,0 +1,731 @@
+openapi: 3.1.0
+info:
+  title: Türkiye API
+  version: 1.0.0
+  summary: Open-source REST API for Turkey-specific developer needs.
+  description: |
+    Exchange rates from TCMB, public holidays and business days, provinces /
+    districts / neighbourhoods / postal codes, TCKN / VKN / IBAN / phone / plate
+    validation, Turkish text tools, QR codes and link previews.
+
+    **Conventions**
+    - Successful responses are wrapped as `{ "data": ..., "meta": {...} }`.
+    - Errors use [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) `application/problem+json`.
+    - Dates are `YYYY-MM-DD` in the Europe/Istanbul time zone.
+    - Anonymous use is rate-limited per IP. Send an API key in `X-API-Key`
+      (or `Authorization: Bearer ...`) for higher limits. Every response
+      carries `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset`.
+    - CORS is open, so the API can be called directly from browsers.
+  license:
+    name: MIT
+    identifier: MIT
+  contact:
+    name: Lupusoft
+    url: https://github.com/lupusoftco/turkiye-api
+servers:
+  - url: /
+    description: This server
+tags:
+  - name: Exchange rates
+    description: Daily indicative rates published by the Central Bank of the Republic of Türkiye (TCMB).
+  - name: Holidays & business days
+    description: Official holidays under Law No. 2429, with half days and Hijri-calendar bayrams.
+  - name: Address
+    description: 81 provinces, 973 districts, ~73,000 neighbourhoods with postal codes, and road distances.
+  - name: Validation
+    description: Checksum and format validation. POST only, so personal numbers never appear in URLs or logs.
+  - name: Text
+    description: Locale-correct Turkish text utilities.
+  - name: QR codes
+    description: SVG or PNG QR codes usable directly as image URLs.
+  - name: Link preview
+    description: Title, description, image and favicon of any public web page.
+  - name: Meta
+    description: Service information.
+security:
+  - {}
+  - apiKey: []
+  - bearer: []
+
+paths:
+  /v1/exchange/rates:
+    get:
+      tags: [Exchange rates]
+      summary: All rates for a date
+      description: Returns the bulletin published on `date`, or the latest one before it for weekends and holidays.
+      operationId: getRates
+      parameters:
+        - $ref: '#/components/parameters/DateDefaultToday'
+        - name: currencies
+          in: query
+          description: Comma-separated ISO 4217 codes to include.
+          schema: { type: string, example: 'USD,EUR,GBP' }
+      responses:
+        '200':
+          description: Rates in TRY per `unit` of each currency.
+          headers:
+            X-RateLimit-Limit: { $ref: '#/components/headers/X-RateLimit-Limit' }
+            X-RateLimit-Remaining: { $ref: '#/components/headers/X-RateLimit-Remaining' }
+            X-RateLimit-Reset: { $ref: '#/components/headers/X-RateLimit-Reset' }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Rate' } }
+                  meta: { $ref: '#/components/schemas/BulletinMeta' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '502': { $ref: '#/components/responses/Upstream' }
+  /v1/exchange/rates/{code}:
+    get:
+      tags: [Exchange rates]
+      summary: One currency
+      operationId: getRate
+      parameters:
+        - $ref: '#/components/parameters/CurrencyCode'
+        - $ref: '#/components/parameters/DateDefaultToday'
+      responses:
+        '200':
+          description: The rate.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Rate' }
+                  meta: { $ref: '#/components/schemas/BulletinMeta' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/exchange/rates/{code}/history:
+    get:
+      tags: [Exchange rates]
+      summary: Daily history of a currency
+      description: At most 366 days per request. Only days with a published bulletin are returned.
+      operationId: getRateHistory
+      parameters:
+        - $ref: '#/components/parameters/CurrencyCode'
+        - { name: from, in: query, description: Defaults to 30 days before `to`., schema: { type: string, format: date } }
+        - { name: to, in: query, description: Defaults to today., schema: { type: string, format: date } }
+        - name: type
+          in: query
+          description: Return only one rate type.
+          schema: { $ref: '#/components/schemas/RateType' }
+      responses:
+        '200':
+          description: Time series, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date: { type: string, format: date }
+                        unit: { type: integer }
+                        forex_buying: { type: [number, 'null'] }
+                        forex_selling: { type: [number, 'null'] }
+                        banknote_buying: { type: [number, 'null'] }
+                        banknote_selling: { type: [number, 'null'] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/exchange/convert:
+    get:
+      tags: [Exchange rates]
+      summary: Convert an amount
+      description: Cross rates are calculated through TRY. The default rate type is `forex_buying` (döviz alış), which is commonly used for invoicing.
+      operationId: convert
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, example: USD } }
+        - { name: to, in: query, required: true, schema: { type: string, example: TRY } }
+        - { name: amount, in: query, schema: { type: number, default: 1, example: 250 } }
+        - { name: type, in: query, schema: { $ref: '#/components/schemas/RateType' } }
+        - $ref: '#/components/parameters/DateDefaultToday'
+      responses:
+        '200':
+          description: Conversion result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      amount: { type: number, example: 250 }
+                      result: { type: number, example: 10462.8 }
+                      rate: { type: number, example: 41.8512 }
+                      from: { type: string, example: USD }
+                      to: { type: string, example: TRY }
+                      rate_type: { $ref: '#/components/schemas/RateType' }
+                      date: { type: string, format: date, description: Bulletin date used. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+
+  /v1/holidays:
+    get:
+      tags: [Holidays & business days]
+      summary: Holidays of a year
+      operationId: listHolidays
+      parameters:
+        - { name: year, in: query, schema: { type: integer, minimum: 2000, maximum: 2070, example: 2026 } }
+        - { name: type, in: query, schema: { type: string, enum: [national, religious] } }
+        - { name: half_days, in: query, description: 'Include half-day holidays (arife, 28 October).', schema: { type: boolean, default: true } }
+      responses:
+        '200':
+          description: Holidays sorted by date. Overlapping holidays are listed separately.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Holiday' } }
+                  meta: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/holidays/check:
+    get:
+      tags: [Holidays & business days]
+      summary: Describe a date
+      operationId: checkDate
+      parameters:
+        - $ref: '#/components/parameters/DateDefaultToday'
+        - $ref: '#/components/parameters/SaturdayIsWorkday'
+        - $ref: '#/components/parameters/HalfDay'
+      responses:
+        '200':
+          description: Whether the date is a weekend, holiday, half day or business day.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      date: { type: string, format: date }
+                      weekday: { type: string, example: Perşembe }
+                      is_weekend: { type: boolean }
+                      is_holiday: { type: boolean }
+                      is_half_day: { type: boolean }
+                      is_business_day: { type: boolean }
+                      holidays: { type: array, items: { $ref: '#/components/schemas/Holiday' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/business-days/count:
+    get:
+      tags: [Holidays & business days]
+      summary: Count business days in a range
+      description: Both ends are included. Ranges are limited to 10 years.
+      operationId: countBusinessDays
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, format: date, example: '2026-10-26' } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date, example: '2026-10-30' } }
+        - $ref: '#/components/parameters/SaturdayIsWorkday'
+        - $ref: '#/components/parameters/HalfDay'
+      responses:
+        '200':
+          description: Counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      from: { type: string, format: date }
+                      to: { type: string, format: date }
+                      calendar_days: { type: integer, example: 5 }
+                      business_days: { type: integer, example: 4 }
+                      non_business_days: { type: integer, example: 1 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/business-days/add:
+    get:
+      tags: [Holidays & business days]
+      summary: Add business days to a date
+      description: The start date is not counted; negative `days` go backwards.
+      operationId: addBusinessDays
+      parameters:
+        - { name: date, in: query, required: true, schema: { type: string, format: date, example: '2026-10-28' } }
+        - { name: days, in: query, required: true, schema: { type: integer, minimum: -2500, maximum: 2500, example: 5 } }
+        - $ref: '#/components/parameters/SaturdayIsWorkday'
+        - $ref: '#/components/parameters/HalfDay'
+      responses:
+        '200':
+          description: Resulting date.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      date: { type: string, format: date }
+                      days: { type: integer }
+                      result: { type: string, format: date }
+                      result_weekday: { type: string }
+
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/address/cities:
+    get:
+      tags: [Address]
+      summary: All provinces
+      operationId: listCities
+      responses:
+        '200':
+          description: 81 provinces ordered by plate code.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/City' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/address/cities/{city}:
+    get:
+      tags: [Address]
+      summary: A province with its districts
+      operationId: getCity
+      parameters: [{ $ref: '#/components/parameters/City' }]
+      responses:
+        '200':
+          description: Province and districts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/City'
+                      - type: object
+                        properties:
+                          districts: { type: array, items: { $ref: '#/components/schemas/District' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/address/cities/{city}/districts:
+    get:
+      tags: [Address]
+      summary: Districts of a province
+      operationId: listDistricts
+      parameters: [{ $ref: '#/components/parameters/City' }]
+      responses:
+        '200':
+          description: Districts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/District' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/address/cities/{city}/districts/{district}/neighbourhoods:
+    get:
+      tags: [Address]
+      summary: Neighbourhoods by province and district name
+      operationId: listNeighbourhoodsByName
+      parameters:
+        - $ref: '#/components/parameters/City'
+        - { name: district, in: path, required: true, description: District name or slug., schema: { type: string, example: sisli } }
+      responses:
+        '200':
+          description: Neighbourhoods with postal codes.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Neighbourhood' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/address/districts/{id}/neighbourhoods:
+    get:
+      tags: [Address]
+      summary: Neighbourhoods by district id
+      operationId: listNeighbourhoods
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: Neighbourhoods with postal codes.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Neighbourhood' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/address/postal-codes/{code}:
+    get:
+      tags: [Address]
+      summary: Neighbourhoods using a postal code
+      operationId: getPostalCode
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string, pattern: '^\d{5}$', example: '34387' } }
+      responses:
+        '200':
+          description: Matching neighbourhoods with district and province.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/NeighbourhoodWithParents' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/address/search:
+    get:
+      tags: [Address]
+      summary: Search neighbourhoods (autocomplete)
+      description: Case- and Turkish-character-insensitive; prefix matches rank first.
+      operationId: searchAddress
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string, minLength: 2, example: mecidiyekoy } }
+        - { name: city, in: query, description: Plate code or name., schema: { type: string, example: '34' } }
+        - { name: district, in: query, description: 'District id, or name together with `city`.', schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        '200':
+          description: Matches.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/NeighbourhoodWithParents' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/address/distance:
+    get:
+      tags: [Address]
+      summary: Road distance between two province centres
+      operationId: getDistance
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: string, example: istanbul } }
+        - { name: to, in: query, required: true, schema: { type: string, example: '06' } }
+      responses:
+        '200':
+          description: Distance in kilometres.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      from: { $ref: '#/components/schemas/City' }
+                      to: { $ref: '#/components/schemas/City' }
+                      km: { type: integer }
+
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/validate/{type}:
+    post:
+      tags: [Validation]
+      summary: Validate a TCKN, VKN, IBAN, phone number or plate
+      description: |
+        Algorithmic checks only — no government system is queried. A valid TCKN
+        checksum does not prove that the number belongs to a person.
+        Send one value or up to 100 in a batch.
+      operationId: validate
+      parameters:
+        - name: type
+          in: path
+          required: true
+          schema: { type: string, enum: [tckn, vkn, iban, phone, plate] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [value]
+                  properties: { value: { type: string, maxLength: 64 } }
+                - type: object
+                  required: [values]
+                  properties: { values: { type: array, maxItems: 100, items: { type: string } } }
+            examples:
+              iban: { value: { value: 'TR33 0006 1005 1978 6457 8413 26' } }
+              batch: { value: { values: ['0532 123 45 67', '+90 212 555 12 34'] } }
+      responses:
+        '200':
+          description: |
+            Always includes `valid`, `normalized` and `reason` (why it is invalid).
+            Extra fields per type — iban: `country`, `formatted`, `bank_code`, `bank`;
+            phone: `type`, `e164`, `national`, `area_code`; plate: `formatted`, `city_code`, `city`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    oneOf:
+                      - $ref: '#/components/schemas/ValidationResult'
+                      - type: array
+                        items: { $ref: '#/components/schemas/ValidationResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /v1/text/case:
+    get:
+      tags: [Text]
+      summary: Turkish-aware case conversion
+      operationId: textCase
+      description: Also accepts POST with a JSON body for long text.
+      parameters:
+        - $ref: '#/components/parameters/Text'
+        - { name: to, in: query, schema: { type: string, enum: [upper, lower, title, sentence, ascii], default: upper } }
+      responses:
+        '200': { $ref: '#/components/responses/TextResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/text/slug:
+    get:
+      tags: [Text]
+      summary: URL slug
+      operationId: textSlug
+      parameters:
+        - $ref: '#/components/parameters/Text'
+        - { name: separator, in: query, schema: { type: string, enum: ['-', '_', '.'], default: '-' } }
+      responses:
+        '200': { $ref: '#/components/responses/TextResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/text/number-to-words:
+    get:
+      tags: [Text]
+      summary: Number to Turkish words
+      description: |
+        Accepts `1250.50` or Turkish formatting `1.250,50`. With `currency`, amounts are
+        rounded to 2 decimals and an invoice form (`#BinİkiYüzElliTürkLirası...#`) is added.
+      operationId: numberToWords
+      parameters:
+        - { name: number, in: query, required: true, schema: { type: string, example: '1.250,50' } }
+        - { name: currency, in: query, schema: { type: string, enum: [TRY, USD, EUR, GBP] } }
+      responses:
+        '200':
+          description: Words.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      number: { type: string }
+                      currency: { type: string }
+                      words: { type: string, example: bin iki yüz elli Türk lirası elli kuruş }
+                      invoice: { type: string, example: '#BinİkiYüzElliTürkLirasıElliKuruş#' }
+                      upper: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/text/syllables:
+    get:
+      tags: [Text]
+      summary: Split Turkish words into syllables
+      operationId: syllables
+      parameters: [{ $ref: '#/components/parameters/Text' }]
+      responses:
+        '200': { $ref: '#/components/responses/TextResult' }
+
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/qr:
+    get:
+      tags: [QR codes]
+      summary: QR code image
+      description: Returns the image itself, so the URL can be used directly in `<img src>`.
+      operationId: qr
+      parameters:
+        - { name: data, in: query, required: true, schema: { type: string, maxLength: 2000, example: 'https://lupusoft.com' } }
+        - { name: format, in: query, schema: { type: string, enum: [svg, png], default: svg } }
+        - { name: size, in: query, description: Approximate width in pixels., schema: { type: integer, minimum: 64, maximum: 2000, default: 300 } }
+        - { name: margin, in: query, description: Quiet zone in modules., schema: { type: integer, minimum: 0, maximum: 10, default: 4 } }
+        - { name: ecc, in: query, description: Error correction level., schema: { type: string, enum: [L, M, Q, H], default: M } }
+        - { name: color, in: query, schema: { type: string, example: '000000' } }
+        - { name: background, in: query, schema: { type: string, example: ffffff } }
+        - { name: transparent, in: query, schema: { type: boolean, default: false } }
+      responses:
+        '200':
+          description: The QR code.
+          content:
+            image/svg+xml: { schema: { type: string } }
+            image/png: { schema: { type: string, format: binary } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /v1/link-preview:
+    get:
+      tags: [Link preview]
+      summary: Title, description, image and favicon of a URL
+      description: |
+        Reads Open Graph, Twitter Card and HTML metadata. Results are cached for 24 hours.
+        Private and reserved addresses are refused. This endpoint has a smaller rate limit.
+      operationId: linkPreview
+      parameters:
+        - { name: url, in: query, required: true, schema: { type: string, example: 'https://github.com' } }
+        - { name: refresh, in: query, description: Bypass the cache., schema: { type: boolean, default: false } }
+      responses:
+        '200':
+          description: Metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/LinkPreview' }
+                  meta: { type: object, properties: { cached: { type: boolean } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /health:
+    get:
+      tags: [Meta]
+      summary: Health check
+      operationId: health
+      responses:
+        '200': { description: OK }
+
+components:
+  securitySchemes:
+    apiKey: { type: apiKey, in: header, name: X-API-Key }
+    bearer: { type: http, scheme: bearer }
+  headers:
+    X-RateLimit-Limit: { schema: { type: integer }, description: Requests allowed in the current window. }
+    X-RateLimit-Remaining: { schema: { type: integer }, description: Requests left in the current window. }
+    X-RateLimit-Reset: { schema: { type: integer }, description: Unix time when the window resets. }
+  parameters:
+    DateDefaultToday:
+      name: date
+      in: query
+      description: Defaults to today (Europe/Istanbul).
+      schema: { type: string, format: date, example: '2026-10-22' }
+    CurrencyCode:
+      name: code
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[A-Za-z]{3}$', example: USD }
+    City:
+      name: city
+      in: path
+      required: true
+      description: Plate code (`34`, `6`) or name (`istanbul`, `İstanbul`).
+      schema: { type: string, example: '34' }
+    Text:
+      name: text
+      in: query
+      required: true
+      description: 'Up to 10,000 characters. Use POST with `{"text": "..."}` for long input.' 
+      schema: { type: string, example: "İSTANBUL'DA ılık bir gün" }
+    SaturdayIsWorkday:
+      name: saturday_is_workday
+      in: query
+      schema: { type: boolean, default: false }
+    HalfDay:
+      name: half_day
+      in: query
+      description: Whether half-day holidays count as business days.
+      schema: { type: string, enum: [business, off], default: business }
+  responses:
+    BadRequest:
+      description: Invalid parameter.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    NotFound:
+      description: Not found.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Unprocessable:
+      description: The request is valid but cannot be fulfilled.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    RateLimited:
+      description: Too many requests. See `Retry-After`.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Upstream:
+      description: An upstream source (TCMB) could not be reached.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    TextResult:
+      description: Result.
+      content: { application/json: { schema: { type: object, properties: { data: { type: object } } } } }
+  schemas:
+    Problem:
+      type: object
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string, example: Bad Request }
+        status: { type: integer, example: 400 }
+        detail: { type: string, example: '`date` must be a valid date in YYYY-MM-DD format.' }
+        instance: { type: string, example: /v1/exchange/rates }
+        parameter: { type: string, example: date }
+    RateType:
+      type: string
+      enum: [forex_buying, forex_selling, banknote_buying, banknote_selling]
+    Rate:
+      type: object
+      properties:
+        code: { type: string, example: USD }
+        unit: { type: integer, example: 1, description: 'Rates are TRY per this many units (e.g. 100 for JPY).' }
+        name_tr: { type: string, example: ABD DOLARI }
+        name_en: { type: string, example: US DOLLAR }
+        forex_buying: { type: [number, 'null'], example: 41.8512 }
+        forex_selling: { type: [number, 'null'], example: 41.9266 }
+        banknote_buying: { type: [number, 'null'], example: 41.8219 }
+        banknote_selling: { type: [number, 'null'], example: 41.9895 }
+    BulletinMeta:
+      type: object
+      properties:
+        requested_date: { type: string, format: date }
+        bulletin_date: { type: string, format: date }
+        bulletin_no: { type: [string, 'null'], example: 2026/201 }
+        base: { type: string, example: TRY }
+    Holiday:
+      type: object
+      properties:
+        date: { type: string, format: date, example: '2026-10-29' }
+        name: { type: string, example: Cumhuriyet Bayramı }
+        name_en: { type: string, example: Republic Day }
+        type: { type: string, enum: [national, religious] }
+        half_day: { type: boolean }
+        starts_at: { type: [string, 'null'], example: '13:00' }
+        estimated: { type: boolean, description: True when a religious date is calculated rather than announced by Diyanet. }
+    City:
+      type: object
+      properties:
+        code: { type: string, example: '34' }
+        name: { type: string, example: İstanbul }
+        slug: { type: string, example: istanbul }
+    District:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string, example: Şişli }
+        slug: { type: string, example: sisli }
+        neighbourhood_count: { type: integer }
+    Neighbourhood:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string, example: Mecidiyeköy Mah }
+        postal_code: { type: string, example: '34387' }
+    NeighbourhoodWithParents:
+      allOf:
+        - $ref: '#/components/schemas/Neighbourhood'
+        - type: object
+          properties:
+            district: { type: object, properties: { id: { type: integer }, name: { type: string } } }
+            city: { type: object, properties: { code: { type: string }, name: { type: string } } }
+    ValidationResult:
+      type: object
+      properties:
+        input: { type: string, description: Only in batch responses. }
+        valid: { type: boolean }
+        normalized: { type: [string, 'null'] }
+        reason: { type: [string, 'null'] }
+      additionalProperties: true
+    LinkPreview:
+      type: object
+      properties:
+        requested_url: { type: string }
+        url: { type: string, description: Final URL after redirects. }
+        title: { type: [string, 'null'] }
+        description: { type: [string, 'null'] }
+        site_name: { type: [string, 'null'] }
+        image: { type: [string, 'null'] }
+        image_alt: { type: [string, 'null'] }
+        favicon: { type: string }
+        type: { type: [string, 'null'] }
+        locale: { type: [string, 'null'] }
+        theme_color: { type: [string, 'null'] }
+        canonical: { type: [string, 'null'] }

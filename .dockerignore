@@ -1,0 +1,7 @@
+.git
+vendor
+storage/*
+!storage/.gitkeep
+.env
+.phpunit.cache
+tests
